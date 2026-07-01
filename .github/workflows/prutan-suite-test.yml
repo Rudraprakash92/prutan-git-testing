@@ -1,0 +1,206 @@
+# .github/workflows/Run-Prutan-Tests.yml
+# ─────────────────────────────────────────────────────────────
+# PruTAN Suite Runner — GitHub Actions (manual trigger only)
+#
+# Secrets required (Repo → Settings → Secrets → Actions):
+#   PRUTAN_API_KEY  → your PruTAN API key
+#
+# How to run:
+#   Actions tab → "Run Prutan Tests" → Run workflow → fill inputs
+# ─────────────────────────────────────────────────────────────
+
+name: Prutan-Suite-Common-Execution-Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      PRUTAN_URL:
+        description: "PruTAN base URL (e.g. http://your-server/prutan/core)"
+        required: true
+        default: "https://app.prutan.com/prutan/core"
+      PRUTAN_API_KEY:
+        description: "PruTAN API Key (e.g. ak_...)"
+        required: true
+        default: "ak_hI3rRlZKDFTlJNEe-0qvzC-PO_aDMGa6L_g_j1Vui8w"
+      SUITE_GUID:
+        description: "PruTAN Suite GUID"
+        required: true
+        default: "48fab208-b284-4302-a77a-c4a8d5f27420"
+      ENVIRONMENT_GUID:
+        description: "PruTAN Environment GUID"
+        required: false
+        default: "97c3a667-2e7d-41ba-9d58-7c8d294b11cb"
+      DATA_STITCHING:
+        description: "Enable data stitching?"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+jobs:
+  run-prutan:
+    name: Run Prutan Suite
+    runs-on: windows-latest        # change to ubuntu-latest for Linux agent
+
+    steps:
+
+      # ── Step 1: Checkout repo ──────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Step 2: Setup Python ───────────────────────────────
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ── Step 3: Install requests ───────────────────────────
+      - name: Install dependencies
+        run: pip install --quiet requests
+
+      # ── Step 4: Write Python runner script ────────────────
+      - name: Write runner script
+        shell: python
+        run: |
+          script = r'''
+          import json
+          import os
+          import sys
+          import time
+          import requests
+
+          def env(name, required=True, default=None):
+              val = os.environ.get(name, default)
+              if required and not val:
+                  sys.exit("[ERROR] Missing required environment variable: " + name)
+              return val
+
+          PRUTAN_URL       = env("PRUTAN_URL").rstrip("/")
+          API_KEY          = env("PRUTAN_API_KEY")
+          SUITE_GUID       = env("SUITE_GUID")
+          ENVIRONMENT_GUID = env("ENVIRONMENT_GUID")
+          DATA_STITCHING   = env("DATA_STITCHING", required=False, default="false")
+          POLL_INTERVAL    = 10
+          MAX_ATTEMPTS     = 60
+
+          HEADERS = {"API-KEY": API_KEY, "Content-Type": "application/json"}
+
+          def collect_pv_failures(node):
+              pv_failed = 0
+              res = node.get("res")
+              if isinstance(res, dict):
+                  pv_output = res.get("pvOutput")
+                  if pv_output and str(pv_output).strip():
+                      try:
+                          pv_list = json.loads(pv_output) if isinstance(pv_output, str) else pv_output
+                          for pv_group in pv_list:
+                              f = pv_group.get("failed") or 0
+                              if f > 0:
+                                  print("[PV FAIL] Test: " + str(pv_group.get("title")) +
+                                        " | Failed: " + str(f) + "/" + str(pv_group.get("totalCount")) +
+                                        " | Node: " + str(node.get("label")))
+                                  for r in (pv_group.get("result") or []):
+                                      if r.get("pass") is False:
+                                          print("  -> Field: " + str(r.get("fieldName")) +
+                                                " | Expected: " + str(r.get("tobe")) +
+                                                " | Actual: " + str(r.get("expected")) +
+                                                " | Msg: " + str(r.get("resultMsg")))
+                              pv_failed += f
+                      except Exception as e:
+                          print("[WARN] Could not parse pvOutput for " + str(node.get("label")) + ": " + str(e))
+              for child in (node.get("children") or []):
+                  if isinstance(child, dict):
+                      pv_failed += collect_pv_failures(child)
+              return pv_failed
+
+          def trigger_suite():
+              payload = {
+                  "suiteGuid": SUITE_GUID,
+                  "environmentGuid": ENVIRONMENT_GUID,
+                  "dataStitching": DATA_STITCHING.lower() == "true",
+              }
+              r = requests.post(PRUTAN_URL + "/router/execute/suite/plan", headers=HEADERS, json=payload)
+              r.raise_for_status()
+              data = r.json()
+              print("Trigger Response: " + str(data))
+              if data.get("status") != "SUCCESS" or not data.get("eguid"):
+                  sys.exit("[ERROR] Suite trigger failed! Response: " + str(data))
+              eguid = data["eguid"]
+              print("Execution GUID: " + eguid)
+              return eguid
+
+          def poll_until_finished(eguid):
+              for attempt in range(1, MAX_ATTEMPTS + 1):
+                  print("---- Poll attempt " + str(attempt) + "/" + str(MAX_ATTEMPTS) + " ----")
+                  r = requests.get(PRUTAN_URL + "/multi/suite/history", headers=HEADERS, params={"sguid": eguid})
+                  r.raise_for_status()
+                  result = r.json().get("response")
+                  status = (result or {}).get("status") or "unknown"
+                  print("Status: " + str(status) +
+                        " | Total: " + str((result or {}).get("allTests", 0)) +
+                        " | Passed: " + str((result or {}).get("passed", 0)) +
+                        " | Failed: " + str((result or {}).get("failed", 0)))
+                  if str(status).lower() == "finished":
+                      return result
+                  time.sleep(POLL_INTERVAL)
+              sys.exit("[ERROR] Timed out after " + str(MAX_ATTEMPTS * POLL_INTERVAL) + "s!")
+
+          def main():
+              eguid  = trigger_suite()
+              result = poll_until_finished(eguid)
+
+              print("Checking pvOutput failures across all test nodes...")
+              pv_total_failed = collect_pv_failures(result)
+              print("pvOutput total failed assertions: " + str(pv_total_failed))
+
+              failed       = result.get("failed") or 0
+              duration_sec = (result.get("duration") or 0) / 1000.0
+              build_status = "FAILED" if (failed > 0 or pv_total_failed > 0) else "SUCCESS"
+
+              print("")
+              print("=================================")
+              print("PRUTAN EXECUTION REPORT")
+              print("=================================")
+              print("Suite         : " + str(result.get("label", "N/A")))
+              print("Environment   : " + str((result.get("env") or {}).get("name", "N/A")))
+              print("Total Tests   : " + str(result.get("allTests", 0)))
+              print("Passed        : " + str(result.get("passed", 0)))
+              print("Failed        : " + str(failed))
+              print("Not Applicable: " + str(result.get("notApplicable", 0)))
+              print("PV Assertions : " + str(pv_total_failed) + " failed")
+              print("Duration      : " + str(duration_sec) + "s")
+              print("Build Status  : " + build_status)
+              print("=================================")
+
+              if failed > 0:
+                  sys.exit("Build FAILED - " + str(failed) + " test(s) failed!")
+              if pv_total_failed > 0:
+                  sys.exit("Build FAILED - " + str(pv_total_failed) + " pvOutput assertion(s) failed!")
+
+              print("All Prutan tests passed! Ready to deploy.")
+              sys.exit(0)
+
+          if __name__ == "__main__":
+              main()
+          '''
+          with open("prutan_runner.py", "w") as f:
+              f.write(script)
+
+      # ── Step 5: Run the suite ──────────────────────────────
+      - name: Run Prutan Suite
+        env:
+          PRUTAN_URL:       ${{ github.event.inputs.PRUTAN_URL }}
+          PRUTAN_API_KEY:          ${{ github.event.inputs.PRUTAN_API_KEY }}
+          SUITE_GUID:       ${{ github.event.inputs.SUITE_GUID }}
+          ENVIRONMENT_GUID: ${{ github.event.inputs.ENVIRONMENT_GUID }}
+          DATA_STITCHING:   ${{ github.event.inputs.DATA_STITCHING }}
+        run: python prutan_runner.py
+
+      # ── Step 6: Cleanup ────────────────────────────────────
+      - name: Cleanup
+        if: always()
+        run: |
+          if (Test-Path prutan_runner.py) { Remove-Item prutan_runner.py }
+        shell: pwsh
