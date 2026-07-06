@@ -20,7 +20,7 @@ on:
       PRUTAN_URL:
         description: "PruTAN base URL (e.g. http://your-server/prutan/core)"
         required: true
-        default: "http://localhost:4200/prutan/core"
+        default: "https://app.prutan.com/prutan/core"
       SUITE_NAME:
         description: "PruTAN Suite Name (provide this OR Suite GUID)"
         required: false
