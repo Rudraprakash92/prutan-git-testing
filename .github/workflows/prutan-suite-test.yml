@@ -3,7 +3,10 @@
 # PruTAN Suite Runner — GitHub Actions (manual trigger only)
 #
 # Secrets required (Repo → Settings → Secrets → Actions):
-#   PRUTAN_API_KEY  → your PruTAN API key
+#   API_KEY  → your PruTAN API key
+#
+# PRUTAN_URL, SUITE_NAME, SUITE_GUID and ENVIRONMENT_GUID are pre-filled
+# dynamically from the suite — review before running.
 #
 # How to run:
 #   Actions tab → "Run Prutan Tests" → Run workflow → fill inputs
@@ -18,9 +21,13 @@ on:
         description: "PruTAN base URL (e.g. http://your-server/prutan/core)"
         required: true
         default: "https://app.prutan.com/prutan/core"
+      SUITE_NAME:
+        description: "PruTAN Suite Name (provide this OR Suite GUID)"
+        required: false
+        default: "moneris_suite_009"
       SUITE_GUID:
-        description: "PruTAN Suite GUID"
-        required: true
+        description: "PruTAN Suite GUID (provide this OR Suite Name)"
+        required: false
         default: "48fab208-b284-4302-a77a-c4a8d5f27420"
       ENVIRONMENT_GUID:
         description: "PruTAN Environment GUID"
@@ -29,7 +36,7 @@ on:
       DATA_STITCHING:
         description: "Enable data stitching?"
         required: false
-        default: "false"
+        default: "true"
         type: choice
         options:
           - "true"
@@ -38,25 +45,30 @@ on:
 jobs:
   run-prutan:
     name: Run Prutan Suite
-    runs-on: windows-latest        # change to ubuntu-latest for Linux agent
+    runs-on: windows-latest
 
     steps:
-
-      # ── Step 1: Checkout repo ──────────────────────────────
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ── Step 2: Setup Python ───────────────────────────────
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # ── Step 3: Install requests ───────────────────────────
       - name: Install dependencies
         run: pip install --quiet requests
 
-      # ── Step 4: Write Python runner script ────────────────
+      - name: Validate Suite inputs
+        shell: pwsh
+        run: |
+          $suiteName = "${{ github.event.inputs.SUITE_NAME }}"
+          $suiteGuid = "${{ github.event.inputs.SUITE_GUID }}"
+          if (-not $suiteName -and -not $suiteGuid) {
+            Write-Error "Either SUITE_NAME or SUITE_GUID must be provided!"
+            exit 1
+          }
+
       - name: Write runner script
         shell: python
         run: |
@@ -74,17 +86,25 @@ jobs:
               return val
 
           PRUTAN_URL       = env("PRUTAN_URL").rstrip("/")
-          API_KEY          = env("PRUTAN_API_KEY")
-          SUITE_GUID       = env("SUITE_GUID")
-          ENVIRONMENT_GUID = env("ENVIRONMENT_GUID")
+          API_KEY          = env("API_KEY")
+
+          # Either SUITE_NAME or SUITE_GUID must be provided - not both required
+          SUITE_NAME = env("SUITE_NAME", required=False, default="")
+          SUITE_GUID = env("SUITE_GUID", required=False, default="")
+
+          ENVIRONMENT_GUID = env("ENVIRONMENT_GUID", required=False)
           DATA_STITCHING   = env("DATA_STITCHING", required=False, default="false")
           POLL_INTERVAL    = 10
           MAX_ATTEMPTS     = 60
 
+          if not SUITE_NAME and not SUITE_GUID:
+            sys.exit("[ERROR] Either SUITE_NAME or SUITE_GUID must be provided!")
+
           HEADERS = {"API-KEY": API_KEY, "Content-Type": "application/json"}
 
-          def collect_pv_failures(node):
-              pv_failed = 0
+          # -- Recursively collect pvOutput results, grouped by request -------------
+          def collect_pv_failures(node, pv_summary):
+              pv_failed_assertions = 0
               res = node.get("res")
               if isinstance(res, dict):
                   pv_output = res.get("pvOutput")
@@ -92,10 +112,13 @@ jobs:
                       try:
                           pv_list = json.loads(pv_output) if isinstance(pv_output, str) else pv_output
                           for pv_group in pv_list:
-                              f = pv_group.get("failed") or 0
-                              if f > 0:
-                                  print("[PV FAIL] Test: " + str(pv_group.get("title")) +
-                                        " | Failed: " + str(f) + "/" + str(pv_group.get("totalCount")) +
+                              group_failed = pv_group.get("failed") or 0
+                              if group_failed > 0:
+                                  pv_summary["failed"] += 1
+                                  pv_failed_assertions += group_failed
+                                  print("[PV FAIL] Request: '" + str(pv_group.get("title")) +
+                                        "' | Failed assertions: " + str(group_failed) +
+                                        "/" + str(pv_group.get("totalCount")) +
                                         " | Node: " + str(node.get("label")))
                                   for r in (pv_group.get("result") or []):
                                       if r.get("pass") is False:
@@ -103,20 +126,27 @@ jobs:
                                                 " | Expected: " + str(r.get("tobe")) +
                                                 " | Actual: " + str(r.get("expected")) +
                                                 " | Msg: " + str(r.get("resultMsg")))
-                              pv_failed += f
+                              else:
+                                  pv_summary["passed"] += 1
                       except Exception as e:
                           print("[WARN] Could not parse pvOutput for " + str(node.get("label")) + ": " + str(e))
               for child in (node.get("children") or []):
                   if isinstance(child, dict):
-                      pv_failed += collect_pv_failures(child)
-              return pv_failed
+                      pv_failed_assertions += collect_pv_failures(child, pv_summary)
+              return pv_failed_assertions
 
           def trigger_suite():
               payload = {
-                  "suiteGuid": SUITE_GUID,
                   "environmentGuid": ENVIRONMENT_GUID,
                   "dataStitching": DATA_STITCHING.lower() == "true",
               }
+              if SUITE_GUID:
+                  payload["suiteGuid"] = SUITE_GUID
+                  print("Triggering by SUITE_GUID: " + SUITE_GUID)
+              else:
+                  payload["suiteName"] = SUITE_NAME
+                  print("Triggering by SUITE_NAME: " + SUITE_NAME)
+
               r = requests.post(PRUTAN_URL + "/router/execute/suite/plan", headers=HEADERS, json=payload)
               r.raise_for_status()
               data = r.json()
@@ -148,12 +178,13 @@ jobs:
               result = poll_until_finished(eguid)
 
               print("Checking pvOutput failures across all test nodes...")
-              pv_total_failed = collect_pv_failures(result)
-              print("pvOutput total failed assertions: " + str(pv_total_failed))
+              pv_summary = {"passed": 0, "failed": 0}
+              collect_pv_failures(result, pv_summary)
 
               failed       = result.get("failed") or 0
+              passed       = result.get("passed") or 0
               duration_sec = (result.get("duration") or 0) / 1000.0
-              build_status = "FAILED" if (failed > 0 or pv_total_failed > 0) else "SUCCESS"
+              build_status = "FAILED" if (failed > 0 or pv_summary["failed"] > 0) else "SUCCESS"
 
               print("")
               print("=================================")
@@ -161,19 +192,25 @@ jobs:
               print("=================================")
               print("Suite         : " + str(result.get("label", "N/A")))
               print("Environment   : " + str((result.get("env") or {}).get("name", "N/A")))
+              print("")
+              print("-- Test Results --")
               print("Total Tests   : " + str(result.get("allTests", 0)))
-              print("Passed        : " + str(result.get("passed", 0)))
+              print("Passed        : " + str(passed))
               print("Failed        : " + str(failed))
               print("Not Applicable: " + str(result.get("notApplicable", 0)))
-              print("PV Assertions : " + str(pv_total_failed) + " failed")
+              print("")
+              print("-- PV Output (grouped by request) --")
+              print("Passed        : " + str(pv_summary["passed"]))
+              print("Failed        : " + str(pv_summary["failed"]))
+              print("")
               print("Duration      : " + str(duration_sec) + "s")
               print("Build Status  : " + build_status)
               print("=================================")
 
               if failed > 0:
                   sys.exit("Build FAILED - " + str(failed) + " test(s) failed!")
-              if pv_total_failed > 0:
-                  sys.exit("Build FAILED - " + str(pv_total_failed) + " pvOutput assertion(s) failed!")
+              if pv_summary["failed"] > 0:
+                sys.exit("Build FAILED - " + str(pv_summary["failed"]) + " pvOutput request(s) failed!")
 
               print("All Prutan tests passed! Ready to deploy.")
               sys.exit(0)
@@ -184,17 +221,16 @@ jobs:
           with open("prutan_runner.py", "w") as f:
               f.write(script)
 
-      # ── Step 5: Run the suite ──────────────────────────────
       - name: Run Prutan Suite
         env:
-          PRUTAN_URL:       ${{ github.event.inputs.PRUTAN_URL }}
-          PRUTAN_API_KEY: ${{ secrets.API_KEY }}
-          SUITE_GUID:       ${{ github.event.inputs.SUITE_GUID }}
+          PRUTAN_URL: ${{ github.event.inputs.PRUTAN_URL }}
+          API_KEY: ${{ secrets.API_KEY }}
+          SUITE_NAME: ${{ github.event.inputs.SUITE_NAME }}
+          SUITE_GUID: ${{ github.event.inputs.SUITE_GUID }}
           ENVIRONMENT_GUID: ${{ github.event.inputs.ENVIRONMENT_GUID }}
-          DATA_STITCHING:   ${{ github.event.inputs.DATA_STITCHING }}
+          DATA_STITCHING: ${{ github.event.inputs.DATA_STITCHING }}
         run: python prutan_runner.py
 
-      # ── Step 6: Cleanup ────────────────────────────────────
       - name: Cleanup
         if: always()
         run: |
