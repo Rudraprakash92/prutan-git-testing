@@ -188,7 +188,7 @@ jobs:
       - name: Run Prutan Suite
         env:
           PRUTAN_URL:       ${{ github.event.inputs.PRUTAN_URL }}
-          PRUTAN_API_KEY: ${{ secrets.PRUTAN_API_KEY }}
+          PRUTAN_API_KEY: ${{ secrets.API_KEY }}
           SUITE_GUID:       ${{ github.event.inputs.SUITE_GUID }}
           ENVIRONMENT_GUID: ${{ github.event.inputs.ENVIRONMENT_GUID }}
           DATA_STITCHING:   ${{ github.event.inputs.DATA_STITCHING }}
