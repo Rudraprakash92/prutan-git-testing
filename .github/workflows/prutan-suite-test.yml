@@ -20,19 +20,19 @@ on:
       PRUTAN_URL:
         description: "PruTAN base URL (e.g. http://your-server/prutan/core)"
         required: true
-        default: "https://app.prutan.com/prutan/core"
+        default: "http://localhost:4200/prutan/core"
       SUITE_NAME:
         description: "PruTAN Suite Name (provide this OR Suite GUID)"
         required: false
-        default: "moneris_suite_009"
+        default: "cicd_test_suite"
       SUITE_GUID:
         description: "PruTAN Suite GUID (provide this OR Suite Name)"
         required: false
-        default: "48fab208-b284-4302-a77a-c4a8d5f27420"
+        default: "75d536e7-e658-4fc3-b41e-e335277ba0aa"
       ENVIRONMENT_GUID:
         description: "PruTAN Environment GUID"
         required: false
-        default: "97c3a667-2e7d-41ba-9d58-7c8d294b11cb"
+        default: "4f9590f3-5e53-4e7f-9d31-50b291519c27"
       DATA_STITCHING:
         description: "Enable data stitching?"
         required: false
