@@ -18,10 +18,6 @@ on:
         description: "PruTAN base URL (e.g. http://your-server/prutan/core)"
         required: true
         default: "https://app.prutan.com/prutan/core"
-      PRUTAN_API_KEY:
-        description: "PruTAN API Key (e.g. ak_...)"
-        required: true
-        default: "ak_hI3rRlZKDFTlJNEe-0qvzC-PO_aDMGa6L_g_j1Vui8w"
       SUITE_GUID:
         description: "PruTAN Suite GUID"
         required: true
@@ -192,7 +188,7 @@ jobs:
       - name: Run Prutan Suite
         env:
           PRUTAN_URL:       ${{ github.event.inputs.PRUTAN_URL }}
-          PRUTAN_API_KEY:          ${{ github.event.inputs.PRUTAN_API_KEY }}
+          PRUTAN_API_KEY: ${{ secrets.PRUTAN_API_KEY }}
           SUITE_GUID:       ${{ github.event.inputs.SUITE_GUID }}
           ENVIRONMENT_GUID: ${{ github.event.inputs.ENVIRONMENT_GUID }}
           DATA_STITCHING:   ${{ github.event.inputs.DATA_STITCHING }}
