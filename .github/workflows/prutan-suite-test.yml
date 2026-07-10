@@ -24,11 +24,11 @@ on:
       SUITE_NAME:
         description: "PruTAN Suite Name (provide this OR Suite GUID)"
         required: false
-        default: "cicd_test_suite"
+        default: "testing suite"
       SUITE_GUID:
         description: "PruTAN Suite GUID (provide this OR Suite Name)"
         required: false
-        default: "75d536e7-e658-4fc3-b41e-e335277ba0aa"
+        default: "bb629db3-a1ee-4f28-b229-2c2de8ce65a0"
       ENVIRONMENT_GUID:
         description: "PruTAN Environment GUID"
         required: false
